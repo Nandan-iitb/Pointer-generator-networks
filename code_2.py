@@ -24,8 +24,8 @@ nltk.download('punkt')
 
 class Parameters:
   # Model Parameters
-  hidden_size: int = 150  # of the encoder; default decoder size is doubled if encoder is bidi
-  dec_hidden_size = 200  # if set, a matrix will transform enc state into dec state
+  hidden_size: int = 64  # of the encoder; default decoder size is doubled if encoder is bidi
+  dec_hidden_size = 128  # if set, a matrix will transform enc state into dec state
   embed_size: int = 128 # Size of the embedding vectors
   eps=1e-31
   batch_size= 64 
@@ -41,18 +41,19 @@ class Parameters:
   # Vocabulary and data parameters
   max_src_len: int = 65  # exclusive of special tokens such as EOS
   max_tgt_len: int = 15  # exclusive of special tokens such as EOS
-  vocab_min_frequency: int = 3
+  vocab_min_frequency: int = 0
   # Data paths
   embed_file = r"/workspace/myproject/Kaggle_ptr_gtr/devanagari_full_one_hot_encoding.txt"#"C:\Users\ajayp\OneDrive\Desktop\IITB Files\Bharat-GPT\New folder\glove_6B_100d\glove.6B.100d.txt" # use pre-trained embeddings
   data_path = r"/workspace/myproject/train_w_splits - train_w_splits.csv"#"C:\Users\ajayp\OneDrive\Desktop\IITB Files\Bharat-GPT\New folder\vnn_csvs\cl_train_news_summary_more.csv"
   val_data_path = r"/workspace/myproject/val_w_splits - val_w_splits.csv"#"C:\Users\ajayp\OneDrive\Desktop\IITB Files\Bharat-GPT\New folder\vnn_csvs\cl_train_news_summary_more.csv"
   test_data_path = r"/workspace/myproject/test_w_splits-test_w_splits.csv"#"C:\Users\ajayp\OneDrive\Desktop\IITB Files\Bharat-GPT\New folder\vnn_csvs\cl_valid_news_summary_more.csv"
+  all_in_one_path = r"/workspace/myproject/all_in_one.csv"
   # Parameters to save the model
   resume_train = False
-  encoder_weights_path=r'/workspace/myproject/Kaggle_ptr_gtr/encoder_sum.pt'
-  decoder_weights_path=r'/workspace/myproject/Kaggle_ptr_gtr/decoder_sum.pt'
-  encoder_decoder_adapter_weights_path=r'/workspace/myproject/Kaggle_ptr_gtr/adapter_sum.pt'
-  losses_path=r'/workspace/myproject/Kaggle_ptr_gtr/val_losses.pkl'
+  encoder_weights_path=f'/workspace/myproject/lstm_based_ptr_gtr_{hidden_size}_{dec_hidden_size}/encoder_sum.pt'
+  decoder_weights_path=f'/workspace/myproject/lstm_based_ptr_gtr_{hidden_size}_{dec_hidden_size}/decoder_sum.pt'
+  encoder_decoder_adapter_weights_path=f'/workspace/myproject/lstm_based_ptr_gtr_{hidden_size}_{dec_hidden_size}/adapter_sum.pt'
+  losses_path=f'/workspace/myproject/lstm_based_ptr_gtr_{hidden_size}_{dec_hidden_size}/val_losses.pkl'
   print_every = 100
 
 def simple_tokenizer(text, lower=False, newline=None):
@@ -489,7 +490,7 @@ def get_next_batch(data, p, vocab, i, batch_size, device):
 
     return x, x_len, y, y_len, x_extra, vocab_ext
 
-def train(dataset,val_dataset,vocab,p,embedding_weights, learning_rate, num_epochs):
+def train(dataset,vocab,p,embedding_weights, learning_rate, num_epochs):
     ''' Run all the steps in the training phase
         Input:
         - dataset: Dataset object, training data
@@ -532,11 +533,11 @@ def train(dataset,val_dataset,vocab,p,embedding_weights, learning_rate, num_epoc
         enc_dec_adapter.load_state_dict(torch.load(p.encoder_decoder_adapter_weights_path,map_location=torch.device(DEVICE)))
     
     # Create a Dataset class containing the training data
-    cnn_data=MyDataset([pair[0] for pair in dataset.pairs],[pair[1] for pair in dataset.pairs],vocab)
+    cnn_data=MyDataset([pair[0] for pair in dataset.pairs[:58527]],[pair[1] for pair in dataset.pairs[:58527]],vocab)
     
     # Create a Dataset class containing the validation data
     #CHECK IF CREATING A VOCAB FOR VALIDATION IS RIGHT
-    val_data=MyDataset([pair[0] for pair in val_dataset.pairs],[pair[1] for pair in val_dataset.pairs],vocab)
+    val_data=MyDataset([pair[0] for pair in dataset.pairs[58527:65031]],[pair[1] for pair in dataset.pairs[58527:65031]],vocab)
     # print(cnn_data[:3]['x_len'])
     
     # DEfine the loss function
@@ -642,15 +643,15 @@ def train(dataset,val_dataset,vocab,p,embedding_weights, learning_rate, num_epoc
             # Get the next batch
             i+=batch_size
             
-        # Calculate the final loss on the training    
-        loss=loss.data.item()/x.size(0)
+        # Calculate the final loss on the training
+            
+        loss=loss.data.item()/6500 #58527 is the number of samples in hindi data
         print(x.size())
         losses.append(loss)
         kbar.add(1, values=[("loss", loss)])
         
         #Repeat the process on the validation dataset
         kbar2 = pkbar.Kbar(target=len(val_data), width=8)
-        print("Jai Shree Rama")
         # calculating validation loss
         val_loss=0
         i=0
@@ -668,8 +669,6 @@ def train(dataset,val_dataset,vocab,p,embedding_weights, learning_rate, num_epoc
             encoder_hidden=encoder.init_hidden(x.size(0), DEVICE)
             # Forward pass in the encoder
             encoder_outputs, encoder_hidden =encoder(encoder_embedded,encoder_hidden,x_len)
-            print("Jai Shree Ram 1")
-            print("encoder hidden shape:", encoder_hidden[0].shape)
             #Create the init input to the encoder
             decoder_input = torch.tensor([vocab.SOS] * x.size(0), device=DEVICE)
             # Adapt the encoder hidden to the encoder hidden size
@@ -708,7 +707,7 @@ def train(dataset,val_dataset,vocab,p,embedding_weights, learning_rate, num_epoc
                 # Apply the loss function
                 nll_loss= criterion(decoder_output, gold_standard)  
                 if not math.isnan(nll_loss):  
-                    loss+=nll_loss
+                    val_loss+=nll_loss
                 
                 #Set the decoder input to the target word or token 
                 decoder_input = y[:,di]  
@@ -729,26 +728,193 @@ def train(dataset,val_dataset,vocab,p,embedding_weights, learning_rate, num_epoc
             torch.save(decoder.state_dict(), p.decoder_weights_path)
             torch.save(enc_dec_adapter.state_dict(), p.encoder_decoder_adapter_weights_path)
             # torch.save(embedding.state_dict(), '/home/svu/e0401988/NLP/summarization/embedding_sum.pt')
-        val_losses.append(avg_val_loss) 
-    
-    df = pd.DataFrame({"loss": losses, "val_losses": val_losses })
-    df.to_csv(p.losses_path)
+        val_losses.append(avg_val_loss)
+    data = {"losses": losses, "val_losses": val_losses}
+
+
+    with open(p.losses_path, "wb") as f:
+        pickle.dump(data, f)
 
     print("Jai SHree Ram")
 
-params =Parameters()
+def predict(dataset,vocab,p,embedding_weights):
+    eps = p.eps
+    batch_size =p.batch_size
+    DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    
+    #Create an adapter between encoder hidden state to decoder hidden size 
+    enc_dec_adapter = nn.Linear(p.hidden_size * 2, p.dec_hidden_size).to(DEVICE)
+    #Create an embedding layer with pretrained weigths
+    embedding = nn.Embedding(len(vocab), p.embed_size, padding_idx=vocab.PAD,
+                             _weight=embedding_weights).to(DEVICE)
+    
+    # Do not train the embeddings
+    embedding.weight.requires_grad=False
+    #Create the encoder
+    encoder = EncoderRNN(p.embed_size, p.hidden_size, p.enc_bidi,rnn_drop=p.enc_rnn_dropout).to(DEVICE)
+    #Create the decoder
+    decoder = DecoderRNN(len(vocab), p.embed_size, p.dec_hidden_size,
+                                  enc_attn=p.enc_attn, dec_attn=p.dec_attn,
+                                  pointer=p.pointer,
+                                  in_drop=p.dec_in_dropout, rnn_drop=p.dec_rnn_dropout,
+                                  out_drop=p.dec_out_dropout, enc_hidden_size=p.hidden_size * 2,
+                                  device=DEVICE, epsilon=p.eps).to(DEVICE)
+    
+    # If the model components have been training, we restore them from a previous save
+    if(os.path.exists(p.encoder_weights_path) and p.resume_train):
+        encoder.load_state_dict(torch.load(p.encoder_weights_path,map_location=torch.device(DEVICE)))
+    if(os.path.exists(p.decoder_weights_path) and p.resume_train):
+        decoder.load_state_dict(torch.load(p.decoder_weights_path,map_location=torch.device(DEVICE)))
+    if(os.path.exists(p.encoder_decoder_adapter_weights_path) and p.resume_train):   
+        enc_dec_adapter.load_state_dict(torch.load(p.encoder_decoder_adapter_weights_path,map_location=torch.device(DEVICE)))
+    for param in encoder.parameters():
+        param.requires_grad = False
 
-dataset = Dataset(params.data_path, simple_tokenizer, params.max_src_len, params.max_tgt_len, max_rows=64000,
-                        truncate_src=True, truncate_tgt=True)
-# Load the validation dataset using the simple tokenizer
-valid_dataset = Dataset(params.val_data_path, simple_tokenizer, params.max_src_len, params.max_tgt_len, max_rows= 3200,
-                        truncate_src=True, truncate_tgt=True)
-#Show the length to check the loadings
-print(dataset.src_len, valid_dataset.src_len,dataset.tgt_len, valid_dataset.tgt_len)
+    # Disable gradient computation for decoder parameters
+    for param in decoder.parameters():
+        param.requires_grad = False
+    test_data=MyDataset([pair[0] for pair in dataset.pairs[-7226:]],[pair[1] for pair in dataset.pairs[-7226:]],vocab)
+    criterion = nn.CrossEntropyLoss()
+    i=0
+    val_loss=0
+    predictions = []
+    while(i<len(test_data)):
+            # Extract the data for the next batch
+        x, x_len, y, y_len, x_extra, vocab_ext = get_next_batch(test_data, p, vocab, i, batch_size, device=DEVICE)
 
-vocab = dataset.build_vocab(params.vocab_min_frequency, embed_file=params.embed_file)
-# convert the embeddings to a tensor
-embedding_weights = torch.from_numpy(vocab.embeddings)
+        # Apply the embedding layer in the encoder
+        encoder_embedded = embedding(x)
+        # Create the init hidden state of the encoder
+        encoder_hidden=encoder.init_hidden(x.size(0), DEVICE)
+        # Forward pass in the encoder
+        encoder_outputs, encoder_hidden =encoder(encoder_embedded,encoder_hidden,x_len)
+        #Create the init input to the encoder
+        decoder_input = torch.tensor([vocab.SOS] * x.size(0), device=DEVICE)
+        # Adapt the encoder hidden to the encoder hidden size
+        decoder_hidden = (enc_dec_adapter(encoder_hidden[0]), enc_dec_adapter(encoder_hidden[1]))
+        decoder_states = []
+        enc_attn_weights = []
+        for di in range(y.size(1)):
+            #Apply the embedding layer to the decoder input
+            decoder_embedded = embedding(decoder_input)
+            # If activation of encoder attention is on 
+            if enc_attn_weights:
+                coverage_vector = get_coverage_vector(enc_attn_weights)
+            else:
+                coverage_vector = None
+                
+            #Forward pass to the decoder
+            decoder_output, decoder_hidden, dec_enc_attn, dec_prob_ptr = decoder(decoder_embedded, decoder_hidden, encoder_hidden,
+                        torch.cat(decoder_states) if decoder_states else None, coverage_vector)
+                        #ext_vocab_size=len(vocab_ext))  #replaced encoder outputs with encoder hidd4en 
+            #Move the tensors to the device
+            decoder_output.to(DEVICE)
+            decoder_hidden[0].to(DEVICE)
+            dec_enc_attn.to(DEVICE)
+            dec_prob_ptr.to(DEVICE)
+            
+            #Save the decoder hidden state
+            decoder_states.append(decoder_hidden[0])
+            decoder_states = [decoder_states[-1]]
+            #Calculate the probability distribution of the decoder outputs
+            prob_distribution = torch.exp(decoder_output)# if log_prob else decoder_output
+            #Get the largest element 
+            _, top_idx = decoder_output.data.topk(1)
+            # Set the current target word to our goal
+            gold_standard = y[:,di]
+            # Apply the loss function
+            nll_loss= criterion(decoder_output, gold_standard)  
+            if not math.isnan(nll_loss):  
+                val_loss+=nll_loss
+            
+            #Set the decoder input to the target word or token 
+            decoder_input = y[:,di] 
+            pred = decoder_output.argmax(dim=1)
+            pred = pred.tolist()
+            pred_split = [vocab[i] for i in pred]
+            s = ''
+            for c in pred_split:
+                s+=c
+            #print(s)
+            predictions.append(s)
+        i+=15
+    return predictions
+    
 
-train(dataset,valid_dataset,vocab, params, embedding_weights,learning_rate=0.001,num_epochs = 20)
+
+def get_predictions(x_test, vocab, params, print_every=20):
+    ''' Generate the predicted summaries of the source texts on x_test
+        Input:
+        - x_test: list of strings, the source texts
+        - vocab: a Vocab Class object, vocabulary of the texts
+        - params: a Parameters object, parameter of the model
+        - print_every: integer, print progress every print_every iterations
+    '''
+    DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # Create a tensor with the embedding vectors
+    embedding_weights = torch.from_numpy(vocab.embeddings).to(DEVICE)
+    # Create the layer to transform inputs between encoder and decoder
+    enc_dec_adapter = nn.Linear(params.hidden_size * 2, params.dec_hidden_size).to(DEVICE)
+    # Create the embedding layer using the embedding vectors
+    embedding = nn.Embedding(len(vocab), params.embed_size, padding_idx=vocab.PAD,_weight=embedding_weights).to(DEVICE)
+    # Create the encoder and the decoder
+    encoder = EncoderRNN(params.embed_size,params.hidden_size, params.enc_bidi,rnn_drop=params.enc_rnn_dropout).to(DEVICE)
+    decoder = DecoderRNN(len(vocab), params.embed_size, params.dec_hidden_size,
+                                  enc_attn=params.enc_attn, dec_attn=params.dec_attn,
+                                  pointer=params.pointer,
+                                  in_drop=params.dec_in_dropout, rnn_drop=params.dec_rnn_dropout,
+                                  out_drop=params.dec_out_dropout, enc_hidden_size=params.hidden_size * 2,
+                                  device=DEVICE).to(DEVICE) 
+
+    # Load the encoder model from file
+    if(os.path.exists(params.encoder_weights_path)):
+        encoder.load_state_dict(torch.load(params.encoder_weights_path,map_location=torch.device(DEVICE)))
+    # Load the decoder model from file
+    if(os.path.exists(params.decoder_weights_path)):
+        decoder.load_state_dict(torch.load(params.decoder_weights_path,map_location=torch.device(DEVICE)))
+    # Load the encoder -decoder adapter component from file
+    if(os.path.exists(params.encoder_decoder_adapter_weights_path)):    
+        enc_dec_adapter.load_state_dict(torch.load(params.encoder_decoder_adapter_weights_path,map_location=torch.device(DEVICE)))
+
+        
+    predicted_summaries = []
+    # Set a progress bar
+    kbar = pkbar.Kbar(target=len(x_test), width=8)
+    # For every text in the validation dataset
+    for i,doc in enumerate(x_test):
+        # Predict the summary for the document
+        pred_summ = prediction(doc,vocab,embedding,encoder,enc_dec_adapter,decoder,DEVICE,params,batch_size=64)
+        #pred_summ = predict(doc,vocab,params,batch_size=1)
+        predicted_summaries.append(' '.join(pred_summ))
+        #Show the progress
+        if i%print_every==0:
+            kbar.update(i)
+            
+    # Set the labeled summaries as the y_test variable, column summary of our dataset
+    return predicted_summaries
+
+def generate_predictions(x_test, vocab, params, print_every=20):
+    ''' Generate the predicted summaries of the source texts on x_test
+        Input:
+        - x_test: list of strings, the source texts
+        - vocab: a Vocab Class object, vocabulary of the texts
+        - params: a Parameters object, parameter of the model
+        - print_every: integer, print progress every print_every iterations
+    '''
+
+    predicted_summaries = []
+    # Set a progress bar
+    kbar = pkbar.Kbar(target=len(x_test), width=8)
+    # For every text in the validation dataset
+    for i,doc in enumerate(x_test):
+        # Predict the summary for the document
+        pred_summ = predict(doc,vocab,i,params,batch_size=64)
+        predicted_summaries.append(' '.join(pred_summ))
+        #Show the progress
+        if i%print_every==0:
+            kbar.update(i)
+            
+    # Set the labeled summaries as the y_test variable, column summary of our dataset
+    return predicted_summaries
+
 
